@@ -17,6 +17,7 @@ import java.util.*;
 
 /**
  * 自定义 DispatcherServlet
+ * 设计模式：注册式单例模式，策略模式，工厂模式
  * @author zym
  */
 public class MyDispatcherServlet extends HttpServlet {
@@ -45,27 +46,23 @@ public class MyDispatcherServlet extends HttpServlet {
      */
     private HashMap ioc = new HashMap<String, Object>(8);
 
-
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        doPost(req, resp);
+    protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        doDispatch(req, resp);
     }
 
-    @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        dispatch(req, resp);
-    }
-
-    public void dispatch(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    public void doDispatch(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         // 获取请求路径
         String url = req.getRequestURL().toString().split(req.getContextPath())[1];
         // 在处理器映射器中查找对应的处理器方法
         Method method = handlerMapping.get(url);
+        // 没找到报错 404
         if (method == null) {
             resp.getWriter().write("404 not found");
             throw new RuntimeException("404 not found");
         }
         try {
+            // 执行目标方法
             method.invoke(ioc.get(firstLetterLowercase(method.getDeclaringClass().getSimpleName())));
         } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
@@ -80,7 +77,6 @@ public class MyDispatcherServlet extends HttpServlet {
      */
     @Override
     public void init() throws ServletException {
-        System.out.println("aaa");
         getConfiguration();
         getFile(packagePath);
         initIoc();
@@ -182,6 +178,7 @@ public class MyDispatcherServlet extends HttpServlet {
 
     /**
      * 将需要被管理的 bean 加入 beanList
+     * 值类型：String （ com.zym.controller.UserController ）
      */
     public void getFile(String packageUrl){
         String url = realPath + packageUrl;
