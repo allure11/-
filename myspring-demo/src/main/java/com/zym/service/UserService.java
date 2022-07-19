@@ -7,5 +7,5 @@ package com.zym.service;
 public interface UserService {
     void test();
 
-    void test2();
+    String test2(String name);
 }

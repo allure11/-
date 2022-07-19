@@ -1,19 +1,19 @@
 package com.zym.spring.servlet;
 
-import com.zym.spring.annotation.MyAutowired;
-import com.zym.spring.annotation.MyController;
-import com.zym.spring.annotation.MyRequestMapping;
-import com.zym.spring.annotation.MyService;
+import com.zym.spring.annotation.*;
 
 import javax.servlet.*;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.*;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 自定义 DispatcherServlet
@@ -39,7 +39,7 @@ public class MyDispatcherServlet extends HttpServlet {
     /**
      * 处理器映射器，存放请求路径和对应的控制器方法
      */
-    private HashMap<String, Method> handlerMapping = new HashMap<>();
+    private ArrayList<Handler> handlerMapping = new ArrayList<>();
 
     /**
      * ioc 容器
@@ -52,23 +52,81 @@ public class MyDispatcherServlet extends HttpServlet {
     }
 
     public void doDispatch(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        // 获取请求路径
-        String url = req.getRequestURL().toString().split(req.getContextPath())[1];
-        // 在处理器映射器中查找对应的处理器方法
-        Method method = handlerMapping.get(url);
-        // 没找到报错 404
-        if (method == null) {
+        req.setCharacterEncoding("UTF-8");
+        /** 在处理器映射器中查找对应的处理器方法 **/
+        Handler handler = getHandler(req);
+        // 没找到对应的处理器，报错 404
+        if (handler == null) {
             resp.getWriter().write("404 not found");
             throw new RuntimeException("404 not found");
         }
+
+        /** 参数处理 **/
+        // 获取前端传进的所有参数，这个值是字符串数组类型的，后面需要转成字符串使用
+        Map<String, String[]> parameterMap = req.getParameterMap();
+        // 获取 handler 方法的参数位置
+        HashMap<String, Integer> parametersIndexMapping = handler.parametersIndexMapping;
+        // 获取 handler 方法的参数类型
+        Class<?>[] parameterTypes = handler.method.getParameterTypes();
+        // 封装参数
+        Object[] parameters = new Object[parametersIndexMapping.size()];
+        // 循环接收到的参数，封装到对应的形参中
+        for (Map.Entry<String, String[]> entry : parameterMap.entrySet()) {
+
+            /** 获取参数值，将之前的字符串数组转换成字符串 **/
+            String value = Arrays.toString(entry.getValue()).replaceAll("\\[|\\]", "").replaceAll(",\\s", ",");
+            // 判断是否需要名为 entry.getKey() 的参数
+            if (!parametersIndexMapping.containsKey(entry.getKey())){continue;}
+            // 获取参数位置
+            int size = parametersIndexMapping.get(entry.getKey());
+            // 参数类型转换
+            parameters[size]= convert(parameterTypes[size], value);
+        }
+        // 参数中添加 request 和 response 对象
+        if (parametersIndexMapping.containsKey(HttpServletRequest.class.getName())){
+            parameters[parametersIndexMapping.get(HttpServletRequest.class.getName())] = req;
+        }
+        if (parametersIndexMapping.containsKey(HttpServletResponse.class.getName())){
+            parameters[parametersIndexMapping.get(HttpServletResponse.class.getName())] = req;
+        }
+
+        /** 执行目标方法 **/
         try {
-            // 执行目标方法
-            method.invoke(ioc.get(firstLetterLowercase(method.getDeclaringClass().getSimpleName())));
+            Object invoke = handler.method.invoke(handler.controller, parameters);
+            if (invoke != null) {
+                resp.setCharacterEncoding("UTF-8");
+                resp.setHeader("content-type","text/html;charset=UTF-8");
+                resp.getWriter().write(invoke.toString());
+            }
         } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
         } catch (InvocationTargetException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * 根据请求路径，获取对应的处理器方法
+     * @param req
+     * @return
+     */
+    private Handler getHandler(HttpServletRequest req) {
+        // 获取请求路径
+        String url = req.getRequestURL().toString().split(req.getContextPath())[1];
+        if (handlerMapping.size() == 0 || handlerMapping == null) {
+            return null;
+        }
+        // 循环 handlerMapping，找到对应的处理器方法
+        for (Handler handler : handlerMapping) {
+            // url 的正则表达式匹配
+            Matcher matcher = handler.pattern.matcher(url);
+            // 匹配不成功，继续下一个
+            if (!matcher.matches()) {continue;}
+            // 匹配成功，返回 handler
+            return handler;
+        }
+        // 没有，返回 null
+        return null;
     }
 
     /**
@@ -82,7 +140,6 @@ public class MyDispatcherServlet extends HttpServlet {
         initIoc();
         initAutowired();
         initHandlerMapping();
-
     }
 
     /**
@@ -139,8 +196,11 @@ public class MyDispatcherServlet extends HttpServlet {
                     continue;
                 }
                 MyRequestMapping myRequestMapping = method.getAnnotation(MyRequestMapping.class);
-                String url = myRequestMapping.value();
-                handlerMapping.put((baseUrl+"/"+url).replaceAll("/+", "/"), method);
+                // 请求路径
+                String url = baseUrl + "/" + myRequestMapping.value();
+                Handler handler = new Handler(entry.getValue(), method, Pattern.compile(url.replaceAll("/+","/")));
+                // 将 handler 存入 handlerMapping
+                handlerMapping.add(handler);
             }
         }
     }
@@ -194,11 +254,10 @@ public class MyDispatcherServlet extends HttpServlet {
                         beanList.add(clazz);
                     } else if (clazz.isAnnotationPresent(MyService.class)){
                         beanList.add(clazz);
-                    }// TODO 其他类型的 bean
+                    }// TODO 其他类型的 bean，以后补充
                 } catch (ClassNotFoundException e) {
                     throw new RuntimeException(e);
                 }
-
             } else {
                 getFile(packageUrl + "/" + file.getName());
             }
@@ -216,6 +275,7 @@ public class MyDispatcherServlet extends HttpServlet {
             FileInputStream fileInputStream = new FileInputStream(new File(realPath + "applicationContext.properties"));
             Properties properties = new Properties();
             properties.load(fileInputStream);
+            // 获取配置文件中的包扫描路径
             String basePackage = properties.getProperty("basePackage");
             packagePath = basePackage.replace(".", "/");
         } catch (FileNotFoundException e) {
@@ -226,9 +286,79 @@ public class MyDispatcherServlet extends HttpServlet {
     }
 
     /**
+     * 参数类型装换
+     */
+    private Object convert(Class<?> type, String value) {
+        if (type == String.class){
+            return value;
+        } else if (type == int.class || type == Integer.class){
+            return Integer.parseInt(value);
+        } else if (type == long.class || type == Long.class){
+            return Long.parseLong(value);
+        } else if (type == double.class || type == Double.class){
+            return Double.parseDouble(value);
+        } else if (type == boolean.class || type == Boolean.class){
+            return Boolean.parseBoolean(value);
+        } else {
+            throw new RuntimeException("参数类型转换异常");
+        }
+    }
+
+    /**
      * 字符串首字母小写
      */
     public String firstLetterLowercase(String str){
         return str.substring(0, 1).toLowerCase() + str.substring(1);
+    }
+
+    /**
+     * Handler 处理器适配器
+     */
+    private class Handler{
+        /** 保存控制器实例 **/
+        protected Object controller;
+        /** 保存方法 **/
+        protected Method method;
+        /** 保存请求路径 **/
+        protected Pattern pattern;
+        /** 保存方法参数名称和其位置 **/
+        protected HashMap<String, Integer> parametersIndexMapping;
+
+        protected Handler(Object controller, Method method, Pattern pattern) {
+            this.controller = controller;
+            this.method = method;
+            this.pattern = pattern;
+            parametersIndexMapping = new HashMap<String, Integer>();
+            putParametersIndexMapping(method);
+        }
+
+        /**
+         * 将方法参数名称和其位置存入 parametersIndexMapping
+         */
+        private void putParametersIndexMapping(Method method){
+            // 获取所有参数及其注解信息
+            Annotation[][] parameterAnnotations = method.getParameterAnnotations();
+            // 循环保存参数名称和位置
+            for (int i = 0; i < parameterAnnotations.length; i++) {
+                for (Annotation annotation : parameterAnnotations[i]) {
+                    // 判断是否是 MyRequestParam 注解
+                    if (annotation instanceof MyRequestParam){
+                        String name = ((MyRequestParam) annotation).value();
+                        parametersIndexMapping.put(name, i);
+                    }
+                }
+            }
+            // 获取所有参数类型信息
+            Class<?>[] parameterTypes = method.getParameterTypes();
+            for (int i = 0; i < parameterTypes.length; i++) {
+                Class<?> parameterType = parameterTypes[i];
+                // 判断是否是 HttpServletRequest 或 HttpServletResponse 类型
+                if (parameterType == HttpServletRequest.class){
+                    parametersIndexMapping.put(HttpServletRequest.class.getName(), i);
+                } else if (parameterType == HttpServletResponse.class){
+                    parametersIndexMapping.put(HttpServletResponse.class.getName(), i);
+                }
+            }
+        }
     }
 }
